@@ -7,7 +7,7 @@ import zipfile
 import shutil
 import stat
 import tempfile
-import tomllib
+import tomllib  # Built-in in Python 3.11+
 import re
 
 # Your GitHub Pages store URL (set automatically by GitHub Actions)
@@ -107,7 +107,7 @@ def process_plugin(config, plugin_id, dist_dir, downloads_dir):
     plugin_root = extract_dir
     for item in os.listdir(extract_dir):
         item_path = os.path.join(extract_dir, item)
-        if os.path.isdir(item_path) and ("package.json" in os.path.listdir(item_path) or "plugin.json" in os.path.listdir(item_path)):
+        if os.path.isdir(item_path) and ("package.json" in os.listdir(item_path) or "plugin.json" in os.listdir(item_path)):
             plugin_root = item_path
             break
 
