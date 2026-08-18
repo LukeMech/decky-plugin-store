@@ -2,13 +2,13 @@ name: Build Custom Decky Store
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Run every 6 hours
+    - cron: '0 */6 * * *'   # Run every 6 hours
   workflow_dispatch:        # Allows manual triggering
   push:
     branches: [ main ]
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 

@@ -1,6 +1,6 @@
 [[plugin]]
 repo = "adv-inn/Deckify"
-exec_files = ["bin/librespot", "bin/helper"]
+exec_files = ["bin/librespot"]
 
 [[plugin]]
 repo = "mubaraknumann/unifideck"

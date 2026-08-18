@@ -15,10 +15,27 @@ import requests
 # ---------------------------------------------------------------------------
 PAGES_URL = os.environ.get("PAGES_URL", "https://your-username.github.io/custom-decky-store")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+
+# Set automatically by GitHub Actions to "owner/repo" of THIS store repo. Old
+# plugin zips are stored forever as release assets here, never deleted.
+STORE_REPO = os.environ.get("GITHUB_REPOSITORY")
 CONFIG_FILE = "plugins_config.toml"
 
 SESSION = requests.Session()
 SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+# A git short/long hash segment: hex digits that include at least one a-f
+# letter, so a purely numeric date/time segment (e.g. "20260812") never
+# matches -- only an actual commit hash like "e24d3ab" does.
+COMMIT_HASH_RE = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
+
+
+def extract_commit_hash(tag_name):
+    if not tag_name:
+        return None
+    for part in re.split(r"[-_]", tag_name):
+        if COMMIT_HASH_RE.match(part) and re.search(r"[a-fA-F]", part):
+            return part.lower()
+    return None
 
 
 def get_headers():
@@ -43,25 +60,44 @@ def calculate_sha256(filepath):
 # ---------------------------------------------------------------------------
 # Version handling
 # ---------------------------------------------------------------------------
-def normalize_version(asset_name, tag_name):
+def normalize_version(asset_name, tag_name, is_prerelease=False):
     """Return a valid SemVer string so the store never chokes on the version.
 
     1) First real X.Y[.Z] found in the asset name, then the tag.
     2) Otherwise a dev prerelease derived from the tag, e.g.
        'Dev-20260812-215318-e24d3ab' -> '0.0.0-dev.20260812.215318.e24d3ab'.
        Prerelease keeps chronological ordering so updates still resolve.
+
+    If the GitHub release is itself marked prerelease (shown as "Dev" on the
+    releases page), the commit hash it was built from (e.g. the 'e24d3ab' in
+    'Dev-20260812-215318-e24d3ab') is appended, so a beta build is never
+    mistaken for a clean stable version even when its asset name happens to
+    contain a plain X.Y.Z number. If no commit hash can be found in the tag,
+    '-dev' is appended instead as a fallback marker.
     """
+    version = None
     for candidate in (asset_name, tag_name):
         if not candidate:
             continue
         m = SEMVER_RE.search(candidate)
         if m:
             major, minor, patch = m.group(1), m.group(2), m.group(3) or "0"
-            return f"{major}.{minor}.{patch}"
+            version = f"{major}.{minor}.{patch}"
+            break
 
-    tag = (tag_name or "").lstrip("vV")
-    ident = re.sub(r"[^0-9A-Za-z]+", ".", tag).strip(".").lower()
-    return f"0.0.0-dev.{ident}" if ident else "0.0.0"
+    if version is None:
+        tag = (tag_name or "").lstrip("vV")
+        ident = re.sub(r"[^0-9A-Za-z]+", ".", tag).strip(".").lower()
+        version = f"0.0.0-dev.{ident}" if ident else "0.0.0"
+
+    if is_prerelease:
+        commit = extract_commit_hash(tag_name)
+        if commit and commit not in version:
+            version = f"{version}-{commit}"
+        elif not commit and "dev" not in version:
+            version = f"{version}-dev"
+
+    return version
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +189,63 @@ def repackage_zip(plugin_root, folder_name, out_path):
 
 
 # ---------------------------------------------------------------------------
+# Persistent hosting: GitHub Releases on THIS repo store old zips forever.
+# A release is created once per plugin+version (tag never reused), and its
+# asset is uploaded once. Nothing is ever deleted or overwritten, so every
+# version ever published stays downloadable.
+# ---------------------------------------------------------------------------
+def get_or_create_release(tag):
+    resp = SESSION.get(
+        f"https://api.github.com/repos/{STORE_REPO}/releases/tags/{tag}",
+        headers=get_headers(),
+        timeout=60,
+    )
+    if resp.status_code == 200:
+        return resp.json()
+
+    resp = SESSION.post(
+        f"https://api.github.com/repos/{STORE_REPO}/releases",
+        headers=get_headers(),
+        json={
+            "tag_name": tag,
+            "name": tag,
+            "body": "Automated plugin archive for the Decky store. Do not delete -- older versions must stay downloadable.",
+            "draft": False,
+            "prerelease": False,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def upload_or_reuse_asset(release, zip_path, zip_name):
+    for a in release.get("assets", []):
+        if a["name"] == zip_name:
+            return a["browser_download_url"]
+
+    upload_url = release["upload_url"].split("{")[0]
+    headers = get_headers()
+    headers["Content-Type"] = "application/zip"
+    with open(zip_path, "rb") as f:
+        resp = SESSION.post(f"{upload_url}?name={zip_name}", headers=headers, data=f.read(), timeout=180)
+    resp.raise_for_status()
+    return resp.json()["browser_download_url"]
+
+
+def publish_zip(tag, zip_path, zip_name, downloads_dir):
+    if not STORE_REPO:
+        # Local/offline fallback (e.g. running outside Actions): host from
+        # the Pages downloads folder instead of GitHub Releases.
+        os.makedirs(downloads_dir, exist_ok=True)
+        shutil.copy(zip_path, os.path.join(downloads_dir, zip_name))
+        return f"{PAGES_URL.rstrip('/')}/downloads/{zip_name}"
+
+    release = get_or_create_release(tag)
+    return upload_or_reuse_asset(release, zip_path, zip_name)
+
+
+# ---------------------------------------------------------------------------
 # Per-plugin pipeline
 # ---------------------------------------------------------------------------
 def pick_release(releases, force_version):
@@ -177,11 +270,14 @@ def pick_asset(release):
     return picked[0] if picked else None
 
 
-def process_plugin(config, plugin_id, downloads_dir):
+def process_plugin(config, plugin_id, previous_entry, downloads_dir):
     repo = config.get("repo")
     if not repo:
         print("  ! Skipping entry with no 'repo'.")
         return None
+
+    def keep_previous():
+        return {**previous_entry, "id": plugin_id} if previous_entry else None
 
     print(f"Processing {repo} ...")
     resp = SESSION.get(
@@ -191,22 +287,33 @@ def process_plugin(config, plugin_id, downloads_dir):
     )
     if resp.status_code == 403 and "rate limit" in resp.text.lower():
         print(f"  ! GitHub rate limit hit for {repo} (set GITHUB_TOKEN).")
-        return None
+        return keep_previous()
     if resp.status_code != 200:
         print(f"  ! Cannot fetch releases for {repo} (HTTP {resp.status_code}).")
-        return None
+        return keep_previous()
 
     release = pick_release(resp.json(), config.get("force_version"))
     if not release:
         print(f"  ! No matching release for {repo}.")
-        return None
+        return keep_previous()
 
     asset = pick_asset(release)
     if not asset:
         print(f"  ! No .zip/.tar.gz asset in {repo} release {release['tag_name']}.")
-        return None
+        return keep_previous()
 
-    version = normalize_version(asset["name"], release["tag_name"])
+    version = normalize_version(asset["name"], release["tag_name"], release.get("prerelease", False))
+
+    existing_versions = list(previous_entry.get("versions", [])) if previous_entry else []
+    remaining_versions = [v for v in existing_versions if v.get("name") != version]
+
+    if previous_entry and len(remaining_versions) != len(existing_versions):
+        # Already published in an earlier run -- reuse it untouched instead of
+        # re-downloading/re-uploading, but move it to the front as "current".
+        reused = next(v for v in existing_versions if v.get("name") == version)
+        print(f"  = {previous_entry.get('name')} {version} already published, skipping rebuild")
+        return {**previous_entry, "id": plugin_id, "versions": [reused] + remaining_versions}
+
     temp_dir = tempfile.mkdtemp()
     try:
         archive_path = os.path.join(temp_dir, asset["name"])
@@ -238,24 +345,29 @@ def process_plugin(config, plugin_id, downloads_dir):
                 print(f"  + chmod +x {rel}")
 
         zip_name = f"{plugin_name}-v{version}.zip".replace(" ", "_")
-        zip_path = os.path.join(downloads_dir, zip_name)
+        zip_path = os.path.join(temp_dir, zip_name)
         repackage_zip(plugin_root, plugin_name, zip_path)
+
+        tag = f"{re.sub(r'[^A-Za-z0-9._-]', '-', repo)}-{version}"
+        artifact_url = publish_zip(tag, zip_path, zip_name, downloads_dir)
+
+        new_version = {
+            "name": version,
+            "hash": calculate_sha256(zip_path),
+            "artifact": artifact_url,
+        }
+        versions = [new_version] + remaining_versions
 
         entry = {
             "id": plugin_id,
+            "repo": repo,
             "name": plugin_name,
             "author": meta.get("author") or repo.split("/")[0],
             "description": meta.get("description") or "No description provided",
             "tags": meta.get("tags") or ["utilities"],
             "image_url": meta.get("image_url")
             or f"https://github.com/{repo.split('/')[0]}.png",
-            "versions": [
-                {
-                    "name": version,
-                    "hash": calculate_sha256(zip_path),
-                    "artifact": f"{PAGES_URL.rstrip('/')}/downloads/{zip_name}",
-                }
-            ],
+            "versions": versions,
         }
         print(f"  ok {plugin_name} {version}")
         return entry
@@ -266,22 +378,39 @@ def process_plugin(config, plugin_id, downloads_dir):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+def fetch_previous_store():
+    """Load the currently-published plugins.json so old versions carry
+    forward instead of being replaced by this run's single latest release."""
+    try:
+        resp = SESSION.get(f"{PAGES_URL.rstrip('/')}/plugins.json", timeout=30)
+        if resp.status_code == 200:
+            return {e["repo"]: e for e in resp.json() if e.get("repo")}
+    except requests.RequestException as e:
+        print(f"  ! Could not fetch previous store state: {e}")
+    return {}
+
+
 def main():
     dist_dir = os.path.join(os.getcwd(), "dist")
     downloads_dir = os.path.join(dist_dir, "downloads")
-    os.makedirs(downloads_dir, exist_ok=True)
+    os.makedirs(dist_dir, exist_ok=True)
 
     if not os.path.exists(CONFIG_FILE):
         print(f"Error: {CONFIG_FILE} not found!")
         return
 
+    if not STORE_REPO:
+        print("Warning: GITHUB_REPOSITORY not set; zips will be hosted locally under dist/downloads instead of GitHub Releases.")
+
     with open(CONFIG_FILE, "rb") as f:
         plugins_config = tomllib.load(f).get("plugin", [])
+
+    previous_by_repo = fetch_previous_store()
 
     store = []
     for idx, cfg in enumerate(plugins_config, start=1):
         try:
-            entry = process_plugin(cfg, idx, downloads_dir)
+            entry = process_plugin(cfg, idx, previous_by_repo.get(cfg.get("repo")), downloads_dir)
             if entry:
                 store.append(entry)
         except Exception as e:  # keep one bad repo from killing the whole build
