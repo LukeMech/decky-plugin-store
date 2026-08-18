@@ -2,16 +2,24 @@ name: Build Custom Decky Store
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
-  workflow_dispatch:
+    - cron: '0 */6 * * *' # Run every 6 hours
+  workflow_dispatch:        # Allows manual triggering
   push:
     branches: [ main ]
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
+
   build-and-deploy:
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -28,13 +36,18 @@ jobs:
       - name: Generate Custom Store & Patch Plugins
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RAW_URL: https://raw.githubusercontent.com/${{ github.repository }}/store
+          # Automatically build the URL for your store
+          PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         run: python build_store.py
 
-      - name: Deploy to 'store' branch
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: store
-          publish_dir: ./dist
-          commit_message: "Auto-update store [skip ci]"
+          path: './dist'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

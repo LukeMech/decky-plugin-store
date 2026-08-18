@@ -8,9 +8,9 @@ import shutil
 import stat
 import tempfile
 import tomllib
-import re
 
-RAW_URL = os.environ.get("RAW_URL", "https://raw.githubusercontent.com/your-username/your-repo/store")
+# Your GitHub Pages store URL (set automatically by GitHub Actions)
+PAGES_URL = os.environ.get("PAGES_URL", "https://your-username.github.io/custom-decky-store")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 CONFIG_FILE = "plugins_config.toml"
 
@@ -44,9 +44,10 @@ def process_plugin(config, plugin_id, dist_dir, downloads_dir):
         return None
         
     releases = releases_resp.json()
+    
     target_release = None
     
-    # Select release based on config
+    # If force_version is specified, look for the exact tag
     if force_version:
         for r in releases:
             if r["tag_name"] == force_version:
@@ -56,10 +57,13 @@ def process_plugin(config, plugin_id, dist_dir, downloads_dir):
             print(f"Error: Release with tag '{force_version}' not found for {repo}.")
             return None
     else:
+        # Default behavior: find the latest stable release (not prerelease)
         for r in releases:
             if not r.get("prerelease", False):
                 target_release = r
                 break
+        
+        # Fallback if there are no stable releases at all
         if not target_release and releases:
             target_release = releases[0]
             
@@ -67,7 +71,10 @@ def process_plugin(config, plugin_id, dist_dir, downloads_dir):
         print(f"No suitable releases found for {repo}.")
         return None
         
-    # Find the plugin archive
+    # Clean the version string (remove 'v' prefix if present)
+    clean_version = target_release["tag_name"].lstrip('v')
+    
+    # Find the plugin archive (.tar.gz or .zip)
     asset = None
     for a in target_release.get("assets", []):
         if a["name"].endswith(".tar.gz") or a["name"].endswith(".zip"):
@@ -78,96 +85,93 @@ def process_plugin(config, plugin_id, dist_dir, downloads_dir):
         print(f"No valid archives (.zip or .tar.gz) found in {repo}.")
         return None
 
-    # Force Semantic Versioning (SemVer) extraction to prevent store crashes
-    semver_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', asset["name"]) or re.search(r'(\d+\.\d+(?:\.\d+)?)', target_release["tag_name"])
-    clean_version = semver_match.group(1) if semver_match else target_release["tag_name"].lstrip('v')
-
-    # Download the original archive
+    # Download the archive to a temporary directory
     temp_dir = tempfile.mkdtemp()
     original_asset_path = os.path.join(temp_dir, asset["name"])
     
     r = requests.get(asset["browser_download_url"], stream=True)
     with open(original_asset_path, 'wb') as f:
         shutil.copyfileobj(r.raw, f)
+        
+    final_path = original_asset_path
+    final_download_url = asset["browser_download_url"]
 
-    # Extract EVERYTHING to a uniform directory
-    extract_dir = os.path.join(temp_dir, "extracted")
-    os.makedirs(extract_dir)
-    
-    if original_asset_path.endswith(".tar.gz"):
+    # CUSTOM DECKIFY PATCHING LOGIC
+    if config.get("patch_deckify", False):
+        print(f"Patching Deckify to version {clean_version}...")
+        extract_dir = os.path.join(temp_dir, "extracted")
+        os.makedirs(extract_dir)
+        
+        # Extract the original archive
         with tarfile.open(original_asset_path, "r:gz") as tar:
             tar.extractall(path=extract_dir)
-    elif original_asset_path.endswith(".zip"):
-        with zipfile.ZipFile(original_asset_path, "r") as z:
-            z.extractall(path=extract_dir)
-
-    # Locate the actual plugin root (the folder containing package.json)
-    plugin_root = extract_dir
-    for item in os.listdir(extract_dir):
-        item_path = os.path.join(extract_dir, item)
-        if os.path.isdir(item_path) and ("package.json" in os.listdir(item_path) or "plugin.json" in os.listdir(item_path)):
-            plugin_root = item_path
-            break
-
-    # Read and enforce semver in package.json and/or plugin.json
-    pkg_data = {}
-    for meta_file in ["package.json", "plugin.json"]:
+            
+        plugin_root = os.path.join(extract_dir, os.listdir(extract_dir)[0])
+        if not os.path.isdir(plugin_root):
+            plugin_root = extract_dir
+            
+        # 1. Fix the version in package.json / plugin.json
+        meta_file = "package.json" if os.path.exists(os.path.join(plugin_root, "package.json")) else "plugin.json"
         meta_path = os.path.join(plugin_root, meta_file)
+        
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            data["version"] = clean_version # Overwrite with clean SemVer
-            if not pkg_data: 
-                pkg_data = data
+                pkg_data = json.load(f)
+            pkg_data["version"] = clean_version
             with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
-
-    # CUSTOM DECKIFY PATCHING (Grant execution rights)
-    if config.get("patch_deckify", False):
-        print(f"Applying custom patch for Deckify...")
+                json.dump(pkg_data, f, indent=4)
+                
+        # 2. Grant execution permissions to librespot (replaces install.sh)
         librespot_path = os.path.join(plugin_root, "bin", "librespot")
         if os.path.exists(librespot_path):
             st = os.stat(librespot_path)
             os.chmod(librespot_path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            
+        # 3. Repackage into a new archive
+        patched_filename = f"Deckify-v{clean_version}-patched.tar.gz"
+        patched_filepath = os.path.join(downloads_dir, patched_filename)
+        
+        with tarfile.open(patched_filepath, "w:gz") as tar:
+            tar.add(plugin_root, arcname="Deckify")
+            
+        final_path = patched_filepath
+        # Set artifact URL to your GitHub Pages hosted file
+        final_download_url = f"{PAGES_URL.rstrip('/')}/downloads/{patched_filename}"
 
-    # ALWAYS repackage as .ZIP while preserving Linux file execution permissions
-    plugin_name = pkg_data.get("name", repo.split("/")[1])
-    zip_filename = f"{plugin_name}-v{clean_version}.zip".replace(" ", "_")
-    zip_filepath = os.path.join(downloads_dir, zip_filename)
+    # Read metadata for the final plugins.json
+    pkg_data = {}
+    try:
+        if final_path.endswith(".tar.gz"):
+            with tarfile.open(final_path, "r:gz") as tar:
+                for member in tar.getmembers():
+                    if member.name.endswith("package.json") or member.name.endswith("plugin.json"):
+                        f = tar.extractfile(member)
+                        pkg_data = json.loads(f.read().decode("utf-8"))
+                        break
+        elif final_path.endswith(".zip"):
+            with zipfile.ZipFile(final_path, "r") as z:
+                for member in z.namelist():
+                    if member.endswith("package.json") or member.endswith("plugin.json"):
+                        with z.open(member) as f:
+                            pkg_data = json.loads(f.read().decode("utf-8"))
+                        break
+    except Exception as e:
+        print(f"Warning: Failed to read package.json from {repo}: {e}")
 
-    with zipfile.ZipFile(zip_filepath, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root_dir, _, files in os.walk(plugin_root):
-            for file in files:
-                file_path = os.path.join(root_dir, file)
-                arcname = os.path.join(plugin_name, os.path.relpath(file_path, plugin_root))
-                
-                # Crucial: Preserve file permissions (chmod +x) inside the zip
-                z_info = zipfile.ZipInfo.from_file(file_path, arcname)
-                st = os.stat(file_path)
-                z_info.external_attr = (st.st_mode & 0xFFFF) << 16 
-                
-                with open(file_path, "rb") as src:
-                    zf.writestr(z_info, src.read())
-
-    # We now serve the newly generated ZIP file
-    final_path = zip_filepath
-    # ZMIANA: usunięto /dist/ z linku, ponieważ foldery zostaną wrzucone bez niego
-    final_artifact_url = f"{RAW_URL.rstrip('/')}/downloads/{zip_filename}"
     hash_val = calculate_sha256(final_path)
-
-    # Output strictly following the lightweight schema
+    
     return {
         "id": plugin_id,
-        "name": plugin_name,
+        "name": pkg_data.get("name", repo.split("/")[1]),
         "author": pkg_data.get("author", repo.split("/")[0]),
         "description": pkg_data.get("description", "No description provided"),
-        "tags": pkg_data.get("tags", ["utilities"]),
-        "image_url": f"https://github.com/{repo.split('/')[0]}.png", 
+        "tags": pkg_data.get("tags", ["custom"]),
+        "image_url": f"https://github.com/{repo.split('/')[0]}.png", # Use GitHub Avatar as fallback image
         "versions": [
             {
                 "name": clean_version,
                 "hash": hash_val,
-                "artifact": final_artifact_url
+                "artifact": final_download_url
             }
         ]
     }
@@ -179,6 +183,7 @@ def main():
     os.makedirs(dist_dir, exist_ok=True)
     os.makedirs(downloads_dir, exist_ok=True)
     
+    # Load plugins configuration from TOML file
     if not os.path.exists(CONFIG_FILE):
         print(f"Error: {CONFIG_FILE} not found!")
         return
@@ -193,11 +198,13 @@ def main():
     
     store_plugins = []
     
+    # Loop through plugins and assign sequential IDs starting from 1
     for idx, config in enumerate(plugins_config, start=1):
         plugin_data = process_plugin(config, idx, dist_dir, downloads_dir)
         if plugin_data:
             store_plugins.append(plugin_data)
             
+    # Save the final plugins.json to the dist/ folder with 2-space indentation
     store_json_path = os.path.join(dist_dir, "plugins.json")
     with open(store_json_path, "w", encoding="utf-8") as f:
         json.dump(store_plugins, f, indent=2)
