@@ -7,8 +7,7 @@ import zipfile
 import shutil
 import stat
 import tempfile
-import tomllib
-from datetime import datetime, timezone
+import tomllib  # Wbudowane w Python 3.11+
 
 # Your GitHub Pages store URL (set automatically by GitHub Actions)
 PAGES_URL = os.environ.get("PAGES_URL", "https://your-username.github.io/custom-decky-store")
@@ -28,7 +27,7 @@ def calculate_sha256(filepath):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
 
-def process_plugin(config, dist_dir, downloads_dir):
+def process_plugin(config, plugin_id, dist_dir, downloads_dir):
     repo = config.get("repo")
     if not repo:
         print("Error: Missing 'repo' in config entry.")
@@ -74,9 +73,6 @@ def process_plugin(config, dist_dir, downloads_dir):
         
     # Clean the version string (remove 'v' prefix if present)
     clean_version = target_release["tag_name"].lstrip('v')
-    
-    # Fetch publish date for official store formatting
-    published_at = target_release.get("published_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     
     # Find the plugin archive (.tar.gz or .zip)
     asset = None
@@ -139,7 +135,7 @@ def process_plugin(config, dist_dir, downloads_dir):
             tar.add(plugin_root, arcname="Deckify")
             
         final_path = patched_filepath
-        # Set download URL to your GitHub Pages hosted file
+        # Set artifact URL to your GitHub Pages hosted file
         final_download_url = f"{PAGES_URL.rstrip('/')}/downloads/{patched_filename}"
 
     # Read metadata for the final plugins.json
@@ -164,31 +160,20 @@ def process_plugin(config, dist_dir, downloads_dir):
 
     hash_val = calculate_sha256(final_path)
     
-    # Generate a stable numeric ID based on the repo name (matches official store format)
-    plugin_id = int(hashlib.md5(repo.encode('utf-8')).hexdigest()[:6], 16)
-    
     return {
         "id": plugin_id,
         "name": pkg_data.get("name", repo.split("/")[1]),
         "author": pkg_data.get("author", repo.split("/")[0]),
         "description": pkg_data.get("description", "No description provided"),
         "tags": pkg_data.get("tags", ["custom"]),
+        "image_url": f"https://github.com/{repo.split('/')[0]}.png", # Use GitHub Avatar as fallback image
         "versions": [
             {
-                "name": clean_version,  # Official API format uses "name" for the version string
+                "name": clean_version,
                 "hash": hash_val,
-                "created": published_at,
-                "downloads": 0,
-                "updates": 0,
-                "download_url": final_download_url # Required override for custom stores
+                "artifact": final_download_url
             }
-        ],
-        "visible": True,
-        "image_url": f"https://github.com/{repo.split('/')[0]}.png", # Use GitHub avatar as a fallback image
-        "downloads": 0,
-        "updates": 0,
-        "created": published_at,
-        "updated": published_at
+        ]
     }
 
 def main():
@@ -213,15 +198,16 @@ def main():
     
     store_plugins = []
     
-    for config in plugins_config:
-        plugin_data = process_plugin(config, dist_dir, downloads_dir)
+    # Loop through plugins and assign sequential IDs starting from 1
+    for idx, config in enumerate(plugins_config, start=1):
+        plugin_data = process_plugin(config, idx, dist_dir, downloads_dir)
         if plugin_data:
             store_plugins.append(plugin_data)
             
-    # Save the final plugins.json to the dist/ folder
+    # Save the final plugins.json to the dist/ folder with 2-space indentation
     store_json_path = os.path.join(dist_dir, "plugins.json")
     with open(store_json_path, "w", encoding="utf-8") as f:
-        json.dump(store_plugins, f, indent=4)
+        json.dump(store_plugins, f, indent=2)
         
     print(f"Store successfully generated at {store_json_path}")
 
