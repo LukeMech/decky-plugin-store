@@ -165,7 +165,7 @@ def process_plugin(config, plugin_id, dist_dir, downloads_dir):
         "name": pkg_data.get("name", repo.split("/")[1]),
         "author": pkg_data.get("author", repo.split("/")[0]),
         "description": pkg_data.get("description", "No description provided"),
-        "tags": pkg_data.get("tags", ["custom"]),
+        "tags": pkg_data.get("tags", ["utilities"]),
         "image_url": f"https://github.com/{repo.split('/')[0]}.png", # Use GitHub Avatar as fallback image
         "versions": [
             {
