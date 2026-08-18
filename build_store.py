@@ -7,27 +7,13 @@ import zipfile
 import shutil
 import stat
 import tempfile
+import tomllib  # Wbudowane w Python 3.11+
+from datetime import datetime, timezone
 
 # Your GitHub Pages store URL (set automatically by GitHub Actions)
 PAGES_URL = os.environ.get("PAGES_URL", "https://your-username.github.io/custom-decky-store")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-
-# Plugin definitions and version toggling (stable vs pre-release)
-PLUGINS_CONFIG = [
-    {
-        "repo": "adv-inn/Deckify",
-        "use_prerelease": False,
-        "patch_deckify": True  # Enables the custom patch logic
-    },
-    {
-        "repo": "mubaraknumann/unifideck",
-        "use_prerelease": True   # Fetches the Dev Build (pre-release)
-    },
-    {
-        "repo": "DeckSettings/decky-game-settings",
-        "use_prerelease": False
-    }
-]
+CONFIG_FILE = "plugins_config.toml"
 
 def get_headers():
     headers = {}
@@ -43,7 +29,12 @@ def calculate_sha256(filepath):
     return sha256_hash.hexdigest()
 
 def process_plugin(config, dist_dir, downloads_dir):
-    repo = config["repo"]
+    repo = config.get("repo")
+    if not repo:
+        print("Error: Missing 'repo' in config entry.")
+        return None
+        
+    force_version = config.get("force_version")
     print(f"Processing {repo}...")
     
     # Fetch releases list from GitHub API
@@ -55,14 +46,28 @@ def process_plugin(config, dist_dir, downloads_dir):
         
     releases = releases_resp.json()
     
-    # Select the appropriate release (stable vs pre-release)
     target_release = None
-    for r in releases:
-        if not config.get("use_prerelease", False) and r["prerelease"]:
-            continue
-        target_release = r
-        break
+    
+    # If force_version is specified, look for the exact tag
+    if force_version:
+        for r in releases:
+            if r["tag_name"] == force_version:
+                target_release = r
+                break
+        if not target_release:
+            print(f"Error: Release with tag '{force_version}' not found for {repo}.")
+            return None
+    else:
+        # Default behavior: find the latest stable release (not prerelease)
+        for r in releases:
+            if not r.get("prerelease", False):
+                target_release = r
+                break
         
+        # Fallback if there are no stable releases at all
+        if not target_release and releases:
+            target_release = releases[0]
+            
     if not target_release:
         print(f"No suitable releases found for {repo}.")
         return None
@@ -70,9 +75,12 @@ def process_plugin(config, dist_dir, downloads_dir):
     # Clean the version string (remove 'v' prefix if present)
     clean_version = target_release["tag_name"].lstrip('v')
     
+    # Fetch publish date for official store formatting
+    published_at = target_release.get("published_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    
     # Find the plugin archive (.tar.gz or .zip)
     asset = None
-    for a in target_release["assets"]:
+    for a in target_release.get("assets", []):
         if a["name"].endswith(".tar.gz") or a["name"].endswith(".zip"):
             asset = a
             break
@@ -156,19 +164,33 @@ def process_plugin(config, dist_dir, downloads_dir):
 
     hash_val = calculate_sha256(final_path)
     
+    # Generate a stable ID based on the repo name
+    plugin_id = int(hashlib.md5(repo.encode('utf-8')).hexdigest()[:6], 16)
+    
     return {
+        "id": plugin_id,
         "name": pkg_data.get("name", repo.split("/")[1]),
         "author": pkg_data.get("author", repo.split("/")[0]),
         "description": pkg_data.get("description", "No description provided"),
         "tags": pkg_data.get("tags", ["custom"]),
         "versions": [
             {
-                "version": clean_version,
+                "name": clean_version,          # Official API format uses "name" for version
+                "version": clean_version,       # Keep "version" for custom store fallback
                 "download_url": final_download_url,
                 "hash": hash_val,
-                "min_loader_version": pkg_data.get("min_loader_version", "v2.0.0")
+                "min_loader_version": pkg_data.get("min_loader_version", "v2.0.0"),
+                "created": published_at,
+                "downloads": 0,
+                "updates": 0
             }
-        ]
+        ],
+        "visible": True,
+        "image_url": f"https://github.com/{repo.split('/')[0]}.png", # Use GitHub Avatar as default image
+        "downloads": 0,
+        "updates": 0,
+        "created": published_at,
+        "updated": published_at
     }
 
 def main():
@@ -178,9 +200,22 @@ def main():
     os.makedirs(dist_dir, exist_ok=True)
     os.makedirs(downloads_dir, exist_ok=True)
     
+    # Load plugins configuration from TOML file
+    if not os.path.exists(CONFIG_FILE):
+        print(f"Error: {CONFIG_FILE} not found!")
+        return
+        
+    with open(CONFIG_FILE, "rb") as f:
+        try:
+            config_data = tomllib.load(f)
+            plugins_config = config_data.get("plugin", [])
+        except Exception as e:
+            print(f"Error parsing {CONFIG_FILE}: {e}")
+            return
+    
     store_plugins = []
     
-    for config in PLUGINS_CONFIG:
+    for config in plugins_config:
         plugin_data = process_plugin(config, dist_dir, downloads_dir)
         if plugin_data:
             store_plugins.append(plugin_data)
