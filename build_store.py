@@ -7,7 +7,7 @@ import zipfile
 import shutil
 import stat
 import tempfile
-import tomllib  # Built-in in Python 3.11+
+import tomllib
 import re
 
 # Your GitHub Pages store URL (set automatically by GitHub Actions)
