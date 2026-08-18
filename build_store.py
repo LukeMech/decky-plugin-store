@@ -7,11 +7,10 @@ import zipfile
 import shutil
 import stat
 import tempfile
-import tomllib  # Built-in in Python 3.11+
+import tomllib
 import re
 
-# Your GitHub Pages store URL (set automatically by GitHub Actions)
-PAGES_URL = os.environ.get("PAGES_URL", "https://your-username.github.io/custom-decky-store")
+RAW_URL = os.environ.get("RAW_URL", "https://raw.githubusercontent.com/your-username/your-repo/store")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 CONFIG_FILE = "plugins_config.toml"
 
@@ -80,7 +79,6 @@ def process_plugin(config, plugin_id, dist_dir, downloads_dir):
         return None
 
     # Force Semantic Versioning (SemVer) extraction to prevent store crashes
-    # It tries to find a pattern like 0.7.4 in the asset name or the tag name.
     semver_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', asset["name"]) or re.search(r'(\d+\.\d+(?:\.\d+)?)', target_release["tag_name"])
     clean_version = semver_match.group(1) if semver_match else target_release["tag_name"].lstrip('v')
 
@@ -153,7 +151,8 @@ def process_plugin(config, plugin_id, dist_dir, downloads_dir):
 
     # We now serve the newly generated ZIP file
     final_path = zip_filepath
-    final_artifact_url = f"{PAGES_URL.rstrip('/')}/downloads/{zip_filename}"
+    # ZMIANA: usunięto /dist/ z linku, ponieważ foldery zostaną wrzucone bez niego
+    final_artifact_url = f"{RAW_URL.rstrip('/')}/downloads/{zip_filename}"
     hash_val = calculate_sha256(final_path)
 
     # Output strictly following the lightweight schema
