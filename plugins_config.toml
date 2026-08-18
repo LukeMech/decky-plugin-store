@@ -8,3 +8,6 @@ force_version = "Dev-20260812-215318-e24d3ab"
 
 [[plugin]]
 repo = "DeckSettings/decky-game-settings"
+
+[[plugin]]
+repo = "jurassicplayer/decky-autoflatpaks"
