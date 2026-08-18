@@ -7,7 +7,7 @@ import zipfile
 import shutil
 import stat
 import tempfile
-import tomllib  # Wbudowane w Python 3.11+
+import tomllib
 from datetime import datetime, timezone
 
 # Your GitHub Pages store URL (set automatically by GitHub Actions)
@@ -164,7 +164,7 @@ def process_plugin(config, dist_dir, downloads_dir):
 
     hash_val = calculate_sha256(final_path)
     
-    # Generate a stable ID based on the repo name
+    # Generate a stable numeric ID based on the repo name (matches official store format)
     plugin_id = int(hashlib.md5(repo.encode('utf-8')).hexdigest()[:6], 16)
     
     return {
@@ -175,18 +175,16 @@ def process_plugin(config, dist_dir, downloads_dir):
         "tags": pkg_data.get("tags", ["custom"]),
         "versions": [
             {
-                "name": clean_version,          # Official API format uses "name" for version
-                "version": clean_version,       # Keep "version" for custom store fallback
-                "download_url": final_download_url,
+                "name": clean_version,  # Official API format uses "name" for the version string
                 "hash": hash_val,
-                "min_loader_version": pkg_data.get("min_loader_version", "v2.0.0"),
                 "created": published_at,
                 "downloads": 0,
-                "updates": 0
+                "updates": 0,
+                "download_url": final_download_url # Required override for custom stores
             }
         ],
         "visible": True,
-        "image_url": f"https://github.com/{repo.split('/')[0]}.png", # Use GitHub Avatar as default image
+        "image_url": f"https://github.com/{repo.split('/')[0]}.png", # Use GitHub avatar as a fallback image
         "downloads": 0,
         "updates": 0,
         "created": published_at,
