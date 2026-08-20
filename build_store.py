@@ -248,10 +248,15 @@ def publish_zip(tag, zip_path, zip_name, downloads_dir):
 # ---------------------------------------------------------------------------
 # Per-plugin pipeline
 # ---------------------------------------------------------------------------
-def pick_release(releases, force_version):
+def pick_release(releases, force_version, allow_prerelease=False):
     if force_version:
         for r in releases:
             if r["tag_name"] == force_version:
+                return r
+        return None
+    if allow_prerelease:
+        for r in releases:
+            if not r.get("draft", False):
                 return r
         return None
     for r in releases:
@@ -292,7 +297,9 @@ def process_plugin(config, plugin_id, previous_entry, downloads_dir):
         print(f"  ! Cannot fetch releases for {repo} (HTTP {resp.status_code}).")
         return keep_previous()
 
-    release = pick_release(resp.json(), config.get("force_version"))
+    release = pick_release(
+        resp.json(), config.get("force_version"), config.get("allow_prerelease", False)
+    )
     if not release:
         print(f"  ! No matching release for {repo}.")
         return keep_previous()
