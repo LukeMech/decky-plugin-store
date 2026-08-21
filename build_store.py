@@ -60,10 +60,14 @@ def calculate_sha256(filepath):
 # ---------------------------------------------------------------------------
 # Version handling
 # ---------------------------------------------------------------------------
-def normalize_version(asset_name, tag_name, is_prerelease=False):
+def normalize_version(asset_name, tag_name, release_name=None, is_prerelease=False):
     """Return a valid SemVer string so the store never chokes on the version.
 
-    1) First real X.Y[.Z] found in the asset name, then the tag.
+    1) First real X.Y[.Z] found in the asset name, then the release title,
+       then the tag. Some repos (e.g. AkazaRenn/SDH-GameSync) tag every
+       release with an opaque timestamp ('20260530153903') and put the actual
+       version in the release title ('v1.1.3') instead, so the title has to
+       be checked before falling back to the tag.
     2) Otherwise a dev prerelease derived from the tag, e.g.
        'Dev-20260812-215318-e24d3ab' -> '0.0.0-dev.20260812.215318.e24d3ab'.
        Prerelease keeps chronological ordering so updates still resolve.
@@ -76,7 +80,7 @@ def normalize_version(asset_name, tag_name, is_prerelease=False):
     '-dev' is appended instead as a fallback marker.
     """
     version = None
-    for candidate in (asset_name, tag_name):
+    for candidate in (asset_name, release_name, tag_name):
         if not candidate:
             continue
         m = SEMVER_RE.search(candidate)
@@ -309,7 +313,9 @@ def process_plugin(config, plugin_id, previous_entry, downloads_dir):
         print(f"  ! No .zip/.tar.gz asset in {repo} release {release['tag_name']}.")
         return keep_previous()
 
-    version = normalize_version(asset["name"], release["tag_name"], release.get("prerelease", False))
+    version = normalize_version(
+        asset["name"], release["tag_name"], release.get("name"), release.get("prerelease", False)
+    )
 
     existing_versions = list(previous_entry.get("versions", [])) if previous_entry else []
     remaining_versions = [v for v in existing_versions if v.get("name") != version]
