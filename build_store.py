@@ -301,8 +301,29 @@ def process_plugin(config, plugin_id, previous_entry, downloads_dir):
         print(f"  ! Cannot fetch releases for {repo} (HTTP {resp.status_code}).")
         return keep_previous()
 
+    releases_json = resp.json()
+
+    # Drop any previously-published version whose upstream release was
+    # deleted (or un-published) from the repo, so plugins.json doesn't keep
+    # offering a version that no longer traces back to a real release. Only
+    # versions carrying a "tag" (recorded at publish time) can be checked
+    # this way; older entries published before this check existed are left
+    # alone since we have no way to verify them.
+    current_tags = {r.get("tag_name") for r in releases_json}
+    existing_versions = list(previous_entry.get("versions", [])) if previous_entry else []
+    kept_versions = []
+    for v in existing_versions:
+        vtag = v.get("tag")
+        if vtag and vtag not in current_tags:
+            print(f"  - {previous_entry.get('name')} {v.get('name')} release deleted upstream, removing from store")
+            continue
+        kept_versions.append(v)
+    existing_versions = kept_versions
+    if previous_entry:
+        previous_entry = {**previous_entry, "versions": existing_versions}
+
     release = pick_release(
-        resp.json(), config.get("force_version"), config.get("allow_prerelease", False)
+        releases_json, config.get("force_version"), config.get("allow_prerelease", False)
     )
     if not release:
         print(f"  ! No matching release for {repo}.")
@@ -317,13 +338,13 @@ def process_plugin(config, plugin_id, previous_entry, downloads_dir):
         asset["name"], release["tag_name"], release.get("name"), release.get("prerelease", False)
     )
 
-    existing_versions = list(previous_entry.get("versions", [])) if previous_entry else []
     remaining_versions = [v for v in existing_versions if v.get("name") != version]
 
     if previous_entry and len(remaining_versions) != len(existing_versions):
         # Already published in an earlier run -- reuse it untouched instead of
         # re-downloading/re-uploading, but move it to the front as "current".
         reused = next(v for v in existing_versions if v.get("name") == version)
+        reused = {**reused, "tag": release["tag_name"]}
         print(f"  = {previous_entry.get('name')} {version} already published, skipping rebuild")
         return {**previous_entry, "id": plugin_id, "versions": [reused] + remaining_versions}
 
@@ -368,6 +389,7 @@ def process_plugin(config, plugin_id, previous_entry, downloads_dir):
             "name": version,
             "hash": calculate_sha256(zip_path),
             "artifact": artifact_url,
+            "tag": release["tag_name"],
         }
         versions = [new_version] + remaining_versions
 
