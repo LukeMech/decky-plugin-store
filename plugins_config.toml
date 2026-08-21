@@ -12,3 +12,6 @@ repo = "DeckSettings/decky-game-settings"
 
 [[plugin]]
 repo = "jurassicplayer/decky-autoflatpaks"
+
+[[plugin]]
+repo = "AkazaRenn/SDH-GameSync"
