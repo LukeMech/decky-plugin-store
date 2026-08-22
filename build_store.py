@@ -21,6 +21,11 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 STORE_REPO = os.environ.get("GITHUB_REPOSITORY")
 CONFIG_FILE = "plugins_config.toml"
 
+# The official Decky store already hosts its plugins forever, so [[decky]]
+# entries just reference it directly instead of downloading/re-hosting.
+DECKY_STORE_API = "https://plugins.deckbrew.xyz/plugins"
+DECKY_CDN_TEMPLATE = "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions/{hash}.zip"
+
 SESSION = requests.Session()
 SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 # A git short/long hash segment: hex digits that include at least one a-f
@@ -411,6 +416,58 @@ def process_plugin(config, plugin_id, previous_entry, downloads_dir):
 
 
 # ---------------------------------------------------------------------------
+# [[decky]] pipeline: passthrough to the official Decky store. Nothing is
+# downloaded or re-hosted -- plugins.deckbrew.xyz and its CDN already keep
+# every version available forever, so we just point at it.
+# ---------------------------------------------------------------------------
+def fetch_decky_store_index():
+    print("Fetching Decky store plugin list ...")
+    try:
+        resp = SESSION.get(DECKY_STORE_API, headers={"User-Agent": "custom-decky-store"}, timeout=60)
+        resp.raise_for_status()
+        return {p["name"].lower(): p for p in resp.json()}
+    except requests.RequestException as e:
+        print(f"  ! Could not fetch Decky store list: {e}")
+        return {}
+
+
+def process_decky_plugin(config, plugin_id, decky_index):
+    name = config.get("name")
+    if not name:
+        print("  ! Skipping [[decky]] entry with no 'name'.")
+        return None
+
+    plugin = decky_index.get(name.lower())
+    if not plugin:
+        print(f"  ! '{name}' not found in the Decky store.")
+        return None
+
+    print(f"Processing Decky store plugin '{plugin['name']}' ...")
+
+    versions = [
+        {
+            "name": v["name"],
+            "hash": v["hash"],
+            "artifact": v.get("artifact") or DECKY_CDN_TEMPLATE.format(hash=v["hash"]),
+        }
+        for v in plugin.get("versions") or []
+    ]
+
+    entry = {
+        "id": plugin_id,
+        "name": plugin["name"],
+        "author": plugin.get("author") or "Unknown",
+        "description": plugin.get("description") or "No description provided",
+        "tags": plugin.get("tags") or ["utilities"],
+        "image_url": plugin.get("image_url")
+        or f"https://github.com/{plugin.get('author', '')}.png",
+        "versions": versions,
+    }
+    print(f"  ok {plugin['name']} ({len(versions)} version(s) from Decky store)")
+    return entry
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def fetch_previous_store():
@@ -438,18 +495,34 @@ def main():
         print("Warning: GITHUB_REPOSITORY not set; zips will be hosted locally under dist/downloads instead of GitHub Releases.")
 
     with open(CONFIG_FILE, "rb") as f:
-        plugins_config = tomllib.load(f).get("plugin", [])
+        config = tomllib.load(f)
+    github_configs = config.get("github", [])
+    decky_configs = config.get("decky", [])
 
     previous_by_repo = fetch_previous_store()
 
     store = []
-    for idx, cfg in enumerate(plugins_config, start=1):
+    plugin_id = 0
+
+    for cfg in github_configs:
+        plugin_id += 1
         try:
-            entry = process_plugin(cfg, idx, previous_by_repo.get(cfg.get("repo")), downloads_dir)
+            entry = process_plugin(cfg, plugin_id, previous_by_repo.get(cfg.get("repo")), downloads_dir)
             if entry:
                 store.append(entry)
         except Exception as e:  # keep one bad repo from killing the whole build
             print(f"  ! {cfg.get('repo', '??')} failed: {e}")
+
+    if decky_configs:
+        decky_index = fetch_decky_store_index()
+        for cfg in decky_configs:
+            plugin_id += 1
+            try:
+                entry = process_decky_plugin(cfg, plugin_id, decky_index)
+                if entry:
+                    store.append(entry)
+            except Exception as e:  # keep one bad entry from killing the whole build
+                print(f"  ! decky '{cfg.get('name', '??')}' failed: {e}")
 
     out_path = os.path.join(dist_dir, "plugins.json")
     with open(out_path, "w", encoding="utf-8") as f:
