@@ -1,7 +1,7 @@
 # [[github]]: built from a GitHub repo's releases. The zip gets downloaded,
 # repackaged, and re-hosted forever on this store's own GitHub Releases.
 [[github]]
-repo = "LukeMech/Deckify"
+repo = "adv-inn/Deckify"
 
 [[github]]
 repo = "jurassicplayer/decky-autoflatpaks"
