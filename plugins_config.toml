@@ -21,5 +21,8 @@ repo = "jurassicplayer/decky-autoflatpaks"
 [[decky]]
 name = "SteamGridDB"
 
+[[decky]]
+name = "Storage Cleaner"
+
 [[github]]
 repo = "Tormak9970/TabMaster"
