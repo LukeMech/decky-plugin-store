@@ -242,6 +242,24 @@ def upload_or_reuse_asset(release, zip_path, zip_name):
     return resp.json()["browser_download_url"]
 
 
+def asset_exists(url):
+    """Check that a previously-published artifact URL is still downloadable,
+    so a release/asset deleted by hand (outside this script's tracking) gets
+    rebuilt instead of silently kept in the store as a dead link."""
+    if not url:
+        return False
+    try:
+        resp = SESSION.head(url, headers=get_headers(), timeout=30, allow_redirects=True)
+        if resp.status_code == 405:  # some hosts don't support HEAD
+            resp = SESSION.get(
+                url, headers={**get_headers(), "Range": "bytes=0-0"}, timeout=30, stream=True
+            )
+            resp.close()
+        return resp.status_code < 400
+    except requests.RequestException:
+        return False
+
+
 def publish_zip(tag, zip_path, zip_name, downloads_dir):
     if not STORE_REPO:
         # Local/offline fallback (e.g. running outside Actions): host from
@@ -347,11 +365,15 @@ def process_plugin(config, plugin_id, previous_entry, downloads_dir):
 
     if previous_entry and len(remaining_versions) != len(existing_versions):
         # Already published in an earlier run -- reuse it untouched instead of
-        # re-downloading/re-uploading, but move it to the front as "current".
+        # re-downloading/re-uploading, but only if the asset is still actually
+        # there; a manually-deleted release/asset must be rebuilt, not linked
+        # to a 404.
         reused = next(v for v in existing_versions if v.get("name") == version)
-        reused = {**reused, "tag": release["tag_name"]}
-        print(f"  = {previous_entry.get('name')} {version} already published, skipping rebuild")
-        return {**previous_entry, "id": plugin_id, "versions": [reused] + remaining_versions}
+        if asset_exists(reused.get("artifact")):
+            reused = {**reused, "tag": release["tag_name"]}
+            print(f"  = {previous_entry.get('name')} {version} already published, skipping rebuild")
+            return {**previous_entry, "id": plugin_id, "versions": [reused] + remaining_versions}
+        print(f"  ! {previous_entry.get('name')} {version} asset missing from hosting, rebuilding")
 
     temp_dir = tempfile.mkdtemp()
     try:
