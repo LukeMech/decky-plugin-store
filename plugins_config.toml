@@ -1,8 +1,7 @@
 # [[github]]: built from a GitHub repo's releases. The zip gets downloaded,
 # repackaged, and re-hosted forever on this store's own GitHub Releases.
 [[github]]
-repo = "adv-inn/Deckify"
-exec_files = ["bin/librespot"]
+repo = "LukeMech/Deckify"
 
 # [[github]]
 # repo = "mubaraknumann/unifideck"
