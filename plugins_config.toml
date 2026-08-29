@@ -9,6 +9,9 @@ repo = "jurassicplayer/decky-autoflatpaks"
 [[github]]
 repo = "Tormak9970/TabMaster"
 
+[[github]]
+repo = "Ciphay/Decky-File-Manager"
+
 # [[github]]
 # repo = "mubaraknumann/unifideck"
 # force_version = "Dev-20260812-215318-e24d3ab"
@@ -22,9 +25,3 @@ repo = "Tormak9970/TabMaster"
 # name must match the plugin's name on that store exactly (case-insensitive).
 [[decky]]
 name = "SteamGridDB"
-
-[[decky]]
-name = "Storage Cleaner"
-
-[[decky]]
-name = "MicroSDeck"
