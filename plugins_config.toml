@@ -7,16 +7,13 @@ repo = "adv-inn/Deckify"
 repo = "moi952/decky-apps-manager"
 
 [[github]]
+repo = "moi952/decky-quick-tab"
+
+[[github]]
 repo = "Tormak9970/TabMaster"
 
 [[github]]
 repo = "Ciphay/Decky-File-Manager"
-
-[[github]]
-repo = "xXJSONDeruloXx/decky-lsfg-vk"
-
-[[github]]
-repo = "BakaPute/ArmadaLSFG"
 
 # [[github]]
 # repo = "mubaraknumann/unifideck"
