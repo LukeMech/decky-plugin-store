@@ -229,9 +229,17 @@ def get_or_create_release(tag):
 
 
 def upload_or_reuse_asset(release, zip_path, zip_name):
+    """Return (download_url, sha256) of the asset actually hosted. When the
+    asset already exists it is kept as-is, so its hash must come from the
+    hosted file -- a freshly rebuilt zip differs byte-wise (file mtimes), and
+    a hash mismatch makes Decky silently abort the install."""
     for a in release.get("assets", []):
         if a["name"] == zip_name:
-            return a["browser_download_url"]
+            url = a["browser_download_url"]
+            digest = a.get("digest") or ""
+            if digest.startswith("sha256:"):
+                return url, digest.split(":", 1)[1]
+            return url, hosted_sha256(url)
 
     upload_url = release["upload_url"].split("{")[0]
     headers = get_headers()
@@ -239,34 +247,39 @@ def upload_or_reuse_asset(release, zip_path, zip_name):
     with open(zip_path, "rb") as f:
         resp = SESSION.post(f"{upload_url}?name={zip_name}", headers=headers, data=f.read(), timeout=180)
     resp.raise_for_status()
-    return resp.json()["browser_download_url"]
+    return resp.json()["browser_download_url"], calculate_sha256(zip_path)
 
 
-def asset_exists(url):
-    """Check that a previously-published artifact URL is still downloadable,
-    so a release/asset deleted by hand (outside this script's tracking) gets
-    rebuilt instead of silently kept in the store as a dead link."""
+def hosted_sha256(url):
+    """sha256 of a previously-published artifact, or None if it's no longer
+    downloadable (e.g. a release/asset deleted by hand), so it gets rebuilt
+    instead of kept in the store as a dead link. Hashing the hosted file also
+    keeps plugins.json's hash in sync with what Decky actually downloads."""
     if not url:
-        return False
+        return None
+    # Published artifacts are public, so no auth: with a token, github.com
+    # redirects release downloads to objects.githubusercontent.com, which
+    # rejects the request with 401 and made every asset look "missing".
     try:
-        resp = SESSION.head(url, headers=get_headers(), timeout=30, allow_redirects=True)
-        if resp.status_code == 405:  # some hosts don't support HEAD
-            resp = SESSION.get(
-                url, headers={**get_headers(), "Range": "bytes=0-0"}, timeout=30, stream=True
-            )
-            resp.close()
-        return resp.status_code < 400
+        with SESSION.get(url, headers={"User-Agent": "custom-decky-store"}, stream=True, timeout=120) as r:
+            if r.status_code >= 400:
+                return None
+            h = hashlib.sha256()
+            for chunk in r.iter_content(chunk_size=1 << 16):
+                h.update(chunk)
+            return h.hexdigest()
     except requests.RequestException:
-        return False
+        return None
 
 
 def publish_zip(tag, zip_path, zip_name, downloads_dir):
+    """Return (artifact_url, sha256) of the published zip."""
     if not STORE_REPO:
         # Local/offline fallback (e.g. running outside Actions): host from
         # the Pages downloads folder instead of GitHub Releases.
         os.makedirs(downloads_dir, exist_ok=True)
         shutil.copy(zip_path, os.path.join(downloads_dir, zip_name))
-        return f"{PAGES_URL.rstrip('/')}/downloads/{zip_name}"
+        return f"{PAGES_URL.rstrip('/')}/downloads/{zip_name}", calculate_sha256(zip_path)
 
     release = get_or_create_release(tag)
     return upload_or_reuse_asset(release, zip_path, zip_name)
@@ -369,8 +382,11 @@ def process_plugin(config, plugin_id, previous_entry, downloads_dir):
         # there; a manually-deleted release/asset must be rebuilt, not linked
         # to a 404.
         reused = next(v for v in existing_versions if v.get("name") == version)
-        if asset_exists(reused.get("artifact")):
-            reused = {**reused, "tag": release["tag_name"]}
+        hosted_hash = hosted_sha256(reused.get("artifact"))
+        if hosted_hash:
+            if hosted_hash != reused.get("hash"):
+                print(f"  ~ {previous_entry.get('name')} {version} hash corrected to match hosted file")
+            reused = {**reused, "hash": hosted_hash, "tag": release["tag_name"]}
             print(f"  = {previous_entry.get('name')} {version} already published, skipping rebuild")
             return {**previous_entry, "id": plugin_id, "versions": [reused] + remaining_versions}
         print(f"  ! {previous_entry.get('name')} {version} asset missing from hosting, rebuilding")
@@ -410,11 +426,11 @@ def process_plugin(config, plugin_id, previous_entry, downloads_dir):
         repackage_zip(plugin_root, plugin_name, zip_path)
 
         tag = f"{re.sub(r'[^A-Za-z0-9._-]', '-', repo)}-{version}"
-        artifact_url = publish_zip(tag, zip_path, zip_name, downloads_dir)
+        artifact_url, artifact_hash = publish_zip(tag, zip_path, zip_name, downloads_dir)
 
         new_version = {
             "name": version,
-            "hash": calculate_sha256(zip_path),
+            "hash": artifact_hash,
             "artifact": artifact_url,
             "tag": release["tag_name"],
         }
